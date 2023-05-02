@@ -51,7 +51,7 @@ class Scope(metaclass=abc.ABCMeta):
             pass
         else:
             # List of tensors [[B, H, W, C], [[B, H, W, C]]
-            batch,height,width,channel = zip(*[list(*t.shape()) for t in tensor])
+            batch, height, width, channel = zip(*[list(*t.shape()) for t in tensor])
             # 3. Check for similar h,w dimensions and create uniform tensor
             if all(h == height[0] for h in height) and all(w == width[0] for w in width):
                 # same dimensions -> check if concat by channel or batch
