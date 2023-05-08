@@ -18,10 +18,12 @@ class Scope(metaclass=abc.ABCMeta):
         if isinstance(name, str):
             name = [name]
         self.layers = OrderedDict.fromkeys(name, type(self))
+        self.model = None
 
     @property
     @abc.abstractmethod
     def hierarchy(self) -> BaseScope:
+        # unused atm
         raise NotImplementedError("hierarchy property not defined")
 
     @classmethod
@@ -32,10 +34,10 @@ class Scope(metaclass=abc.ABCMeta):
                 hasattr(subclass, 'extract_text') and
                 callable(subclass.extract_text))
 
-    def build(self, model: keras.Model) -> keras.Model:
+    def build(self, model: keras.Model):
         layers = [model.get_layer(name).output for name in list(self.layers.keys())]
-        model = keras.models.Model(inputs=model.input, outputs=layers)
-        return model
+        self.model = keras.models.Model(inputs=model.input, outputs=layers)
+        return self
 
     @abc.abstractmethod
     def call(self, *args, **kwargs):
@@ -45,6 +47,7 @@ class Scope(metaclass=abc.ABCMeta):
 
     def __call__(self, tensor, *args, **kwargs):
         """Process list of tensors into one Tensor"""
+        tensor = self.model(tensor, training=False)
         # check possible tensor states
         # 1. Single Tensor [B, H, W, C] -> Nothing to do
         if len(tensor) == 1:
@@ -56,7 +59,7 @@ class Scope(metaclass=abc.ABCMeta):
             if all(h == height[0] for h in height) and all(w == width[0] for w in width):
                 # same dimensions -> check if concat by channel or batch
                 # for now just concat by channel
-                tensor = tf.concat([t.reshape((1,height[0], width[0], -1)) for t in tensor], axis=-1)
+                tensor = tf.concat([t.reshape((1, height[0], width[0], -1)) for t in tensor], axis=-1)
             # 4. create a ragged tensor
             tensor = tf.ragged.constant(tensor)
             tf.get_logger().info(f"Created ragged tensor of shape {tensor.shape.as_list()} during"
@@ -86,7 +89,7 @@ class Block(Scope):
         if len(self.layers) != 1 and len(self.layers) % 2 != 0:
             raise ValueError("names are not divisible into pairs of two")
 
-    def _unpack(self, model: keras.Model, layer_list: list, end:str=None, begin:str=None, *args):
+    def _unpack(self, model: keras.Model, layer_list: list, end: str = None, begin:str=None, *args):
         if end is None:
             return layer_list
         end = model.layers.index(end)
@@ -105,9 +108,9 @@ class Block(Scope):
     def hierarchy(self) -> None:
         return None
 
-    def call(self, *args, **kwargs):
+    def call(self, tensor, *args, **kwargs):
         # No special access operation
-        pass
+        return tensor
 
 
 class Layer(Scope):
@@ -118,13 +121,11 @@ class Layer(Scope):
 
     def call(self, tensor, *args, **kwargs):
         # No special access operation
-        pass
+        return tensor
 
     def __getitem__(self,
-                    item: int) -> Channel:
-        temp_ch = Channel(list(self.layers.keys()))
-        temp_ch.call = partial(temp_ch.call, channel_index=item)
-        return temp_ch
+                    item: Union[int, slice]) -> Channel:
+        return Channel(list(self.layers.keys()), item)
 
     @property
     def hierarchy(self) -> Type[Block]:
@@ -134,31 +135,33 @@ class Layer(Scope):
 class Channel(Scope):
 
     def __init__(self,
-                 name: Union[list[str], str]):
+                 name: Union[list[str], str],
+                 index: Union[int, slice]):
         super(Channel, self).__init__(name=name)
+        self.index = index
 
-    def call(self, tensor, channel_index, *args, **kwargs):
-        return tensor[..., channel_index]
+    def call(self, tensor, *args, **kwargs):
+        return tensor[..., self.index]
 
     @property
     def hierarchy(self) -> Tuple[Type[Layer], Type[Neuron]]:
         return Layer, Neuron
 
     def __getitem__(self,
-                    item: tuple[int, int]) -> Neuron:
-        temp_n = Neuron(list(self.layers.keys()))
-        temp_n.call = partial(temp_n.call, position=item)
-        return temp_n
+                    item: Tuple[Union[int, slice], Union[int, slice]]) -> Neuron:
+        return Neuron(list(self.layers.keys()), item)
 
 
 class Neuron(Scope):
 
     def __init__(self,
-                 name: Union[list[str], str]):
+                 name: Union[list[str], str],
+                 index: Tuple[Union[int, slice], Union[int, slice]]):
         super(Neuron, self).__init__(name=name)
+        self.index = index
 
-    def call(self, tensor, position, *args, **kwargs):
-        height, width = position
+    def call(self, tensor, *args, **kwargs):
+        height, width = self.index
         return tensor[:, height, width, :]
 
     @property
