@@ -2,29 +2,31 @@ from __future__ import annotations
 import abc
 from typing import Tuple, Type, TypeVar, Union
 from collections import OrderedDict
-from functools import partial
 
 
 import tensorflow as tf
 from tensorflow import keras
 
 BaseScope = TypeVar('BaseScope', bound='Scope')
-#BaseScopeT = Tuple[BaseScope, BaseScope]
 
 
-class Scope(metaclass=abc.ABCMeta):
-    def __init__(self,
-                 name: Union[list[str], str]):
-        if isinstance(name, str):
-            name = [name]
-        self.layers = OrderedDict.fromkeys(name, type(self))
-        self.model = None
+class Scope(keras.layers.Layer, metaclass=abc.ABCMeta):
+
+    _scopes = OrderedDict({})
 
     @property
-    @abc.abstractmethod
-    def hierarchy(self) -> BaseScope:
-        # unused atm
-        raise NotImplementedError("hierarchy property not defined")
+    def scopes(self) -> OrderedDict:
+        return Scope._scopes
+
+    def __init__(self,
+                 layer: Union[list[str], str]):
+        super().__init__()
+        if isinstance(layer, str):
+            layer = [layer]
+        self.layer = layer
+
+        self._loss_weight = 1.0
+        self.model = None
 
     @classmethod
     def __subclasshook__(cls, subclass):
@@ -34,10 +36,8 @@ class Scope(metaclass=abc.ABCMeta):
                 hasattr(subclass, 'extract_text') and
                 callable(subclass.extract_text))
 
-    def build(self, model: keras.Model):
-        layers = [model.get_layer(name).output for name in list(self.layers.keys())]
-        self.model = keras.models.Model(inputs=model.input, outputs=layers)
-        return self
+    def get_model_layers(self, model) -> list[str]:
+        return self._layers
 
     @abc.abstractmethod
     def call(self, *args, **kwargs):
@@ -45,7 +45,12 @@ class Scope(metaclass=abc.ABCMeta):
         """Define the scope access"""
         raise NotImplementedError()
 
-    def __call__(self, tensor, *args, **kwargs):
+    def __call__(self, *args, **kwargs):
+        tensor, *args = args
+        tensor = self._batch_outputs(tensor)
+        super(self, Layer).__call__(tensor, *args, **kwargs)
+
+    def _batch_outputs(self, tensor):
         """Process list of tensors into one Tensor"""
         tensor = self.model(tensor, training=False)
         # check possible tensor states
@@ -64,49 +69,60 @@ class Scope(metaclass=abc.ABCMeta):
             tensor = tf.ragged.constant(tensor)
             tf.get_logger().info(f"Created ragged tensor of shape {tensor.shape.as_list()} during"
                                  f"scope call")
-        return self.call(tensor, *args, **kwargs)
+        return tensor
+
+    @classmethod
+    def _add_scope(cls: Type[BaseScope], scope: BaseScope, weight: float):
+        BaseScope.scopes.update(
+            {len(cls.scopes) + 1: {'item': scope,
+                                   'weight': weight}}
+        )
+
+    def __mul__(self, other: Union[float, int]):
+        self._loss_weight = float(other)
+        return self
+
+    def __rmul__(self, other):
+        return self.__mul__(other)
 
     def __add__(self,
                 other: BaseScope):
-        self.layers.update(other)
+        BaseScope._add_scope(self, self._loss_weight)
+        BaseScope._add_scope(self, other._loss_weight)
         return self
 
     def __sub__(self,
                 other: BaseScope):
-        for k in other.layers:
-            self.layers.pop(k, None)
-        return self
-
-    def __truediv__(self, other):
-        pass
+        self + (-1*other)
 
 
 class Block(Scope):
 
     def __init__(self,
-                 name: Union[list[str], str]):
-        super(Block, self).__init__(name=name)
-        if len(self.layers) != 1 and len(self.layers) % 2 != 0:
-            raise ValueError("names are not divisible into pairs of two")
+                 layer: Union[list[str], str]):
+        super(Block, self).__init__(layer=layer)
+        layer_len = len(self.layer)
+        if layer_len != 1 and layer_len % 2 != 0:
+            raise ValueError("Layer names are not divisible into pairs of two")
 
-    def _unpack(self, model: keras.Model, layer_list: list, end: str = None, begin:str=None, *args):
+    def _unpack(self,
+                model: keras.Model,
+                layer_list: list,
+                begin: str = None,
+                end: str = None,
+                *args):
         if end is None:
             return layer_list
         end = model.layers.index(end)
         start = model.layers.index(begin) if begin is not None else 0
-        layer_list.extend(model.layers[start, end])
+        layer_list.extend(model.layers[start:end])
         self._unpack(model, layer_list,  *args)
 
-    def build(self, model: keras.Model) -> keras.Model:
+    def get_model_layers(self, model: keras.Model) -> list[str]:
         layer_list = []
-        layer_list = self._unpack(model, layer_list, *list(self.layers.keys()))
-        layers = [model.get_layer(name).output for name in layer_list]
-        model = keras.models.Model(inputs=model.input, outputs=layers)
-        return model
-
-    @property
-    def hierarchy(self) -> None:
-        return None
+        names = [None, *self.layer] if len(self.layer) == 1 else self.layer
+        layer_list = self._unpack(model, layer_list, *names)
+        return layer_list
 
     def call(self, tensor, *args, **kwargs):
         # No special access operation
@@ -116,8 +132,8 @@ class Block(Scope):
 class Layer(Scope):
 
     def __init__(self,
-                 name: Union[list[str], str]):
-        super(Layer, self).__init__(name=name)
+                 layer: Union[list[str], str]):
+        super(Layer, self).__init__(layer=layer)
 
     def call(self, tensor, *args, **kwargs):
         # No special access operation
@@ -125,45 +141,33 @@ class Layer(Scope):
 
     def __getitem__(self,
                     item: Union[int, slice]) -> Channel:
-        return Channel(list(self.layers.keys()), item)
-
-    @property
-    def hierarchy(self) -> Type[Block]:
-        return Block
+        return Channel(self.layer, item)
 
 
 class Channel(Scope):
 
     def __init__(self,
-                 name: Union[list[str], str],
+                 layer: Union[list[str], str],
                  index: Union[int, slice]):
-        super(Channel, self).__init__(name=name)
+        super(Channel, self).__init__(layer=layer)
         self.index = index
 
     def call(self, tensor, *args, **kwargs):
         return tensor[..., self.index]
 
-    @property
-    def hierarchy(self) -> Tuple[Type[Layer], Type[Neuron]]:
-        return Layer, Neuron
-
     def __getitem__(self,
                     item: Tuple[Union[int, slice], Union[int, slice]]) -> Neuron:
-        return Neuron(list(self.layers.keys()), item)
+        return Neuron(self.layer, item)
 
 
 class Neuron(Scope):
 
     def __init__(self,
-                 name: Union[list[str], str],
+                 layer: Union[list[str], str],
                  index: Tuple[Union[int, slice], Union[int, slice]]):
-        super(Neuron, self).__init__(name=name)
+        super(Neuron, self).__init__(layer=layer)
         self.index = index
 
     def call(self, tensor, *args, **kwargs):
         height, width = self.index
         return tensor[:, height, width, :]
-
-    @property
-    def hierarchy(self) -> None:
-        return None

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Tuple, Optional, Union
+from typing import Callable, Tuple, Optional
 
 import tensorflow as tf
 from tensorflow import keras
@@ -41,17 +41,9 @@ class Basemodel:
 
     @staticmethod
     def create_extractor(model: keras.Model,
-                         names: Union[list[str], str]):
-        #TODO: maybe the extractor should dispatch different types of models e.g.
-        # features, classes, single neurons
+                         names: list[str]):
 
-
-        if isinstance(names, str):
-            names = [names]
         # define the extraction model
         layers = [model.get_layer(name).output for name in names]
         model = keras.models.Model(inputs=model.input, outputs=layers)
         return model
-
-
-
