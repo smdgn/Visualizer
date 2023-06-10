@@ -18,6 +18,17 @@ from src.scope import Scope
 
 # if __name__ == '__main__':
 # unittest.main()
+# ===== Fixtures ==================#
+@pytest.fixture
+def example_scope1():
+    return Scope("layer1")
+
+
+@pytest.fixture
+def example_scope2():
+    return Scope("layer2")
+
+# ==================================== #
 
 
 @pytest.mark.parametrize("scope_init_name, expected_scope_name",
@@ -40,6 +51,60 @@ def test_scope_invalid_init(invalid_scope_name_structure):
 
 
 
-@pytest.fixture
-def example_scope():
-    return Scope("layer1")
+@pytest.mark.arithmetic
+def test_scope_arithmetic_plus(example_scope1, example_scope2):
+    assert example_scope1 + example_scope2 == \
+       {
+            1: {"item": example_scope1,
+                "weight": 1.0},
+            2: {"item": example_scope2,
+                "weight": 1.0}
+       }
+
+
+@pytest.mark.arithmetic
+def test_scope_arithmetic_plus_rev(example_scope1, example_scope2):
+    assert example_scope1 + example_scope2 == \
+           {
+               1: {"item": example_scope2,
+                   "weight": 1.0},
+               2: {"item": example_scope1,
+                   "weight": 1.0}
+           }
+
+
+@pytest.mark.arithmetic
+def test_scope_arithmetic_sub(example_scope1, example_scope2):
+    assert example_scope1 - example_scope2 == \
+           {
+               1: {"item": example_scope1,
+                   "weight": 1.0},
+               2: {"item": example_scope2,
+                   "weight": -1.0}
+           }
+
+
+@pytest.mark.arithmetic
+@pytest.mark.parametrize("example_numbers_valid",
+                         [1.0,
+                          2.0,
+                          1,
+                          -1,
+                          -2.0,
+                          +1,
+                          +2.0
+                          ])
+def test_scope_arithmetic_mul_valid(example_scope1, example_numbers_valid):
+    example_scope1*example_numbers_valid
+    assert example_scope1._loss_weight == float(example_numbers_valid)
+
+
+@pytest.mark.arithmetic
+@pytest.mark.parametrize("example_numbers_invalid",
+                         ["str",
+                          example_scope2
+                          ])
+def test_scope_arithmetic_mul_invalid(example_scope1, example_numbers_invalid):
+    with pytest.raises(ValueError):
+        example_scope1*example_numbers_invalid
+

@@ -79,8 +79,11 @@ class Scope(keras.layers.Layer, metaclass=abc.ABCMeta):
         )
 
     def __mul__(self, other: Union[float, int]):
-        self._loss_weight = float(other)
-        return self
+        if isinstance(float, int):
+            self._loss_weight = float(other)
+            return self
+        else:
+            raise ValueError("multiplier must be int or float")
 
     def __rmul__(self, other):
         return self.__mul__(other)
