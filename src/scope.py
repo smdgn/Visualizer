@@ -9,14 +9,69 @@ from tensorflow import keras
 
 BaseScope = TypeVar('BaseScope', bound='Scope')
 
+# TODO: solo use scopes without computation will throw no active tapes error
+# maybe add anonymous tape also
+
+
+class Tape:
+
+    _tapes = list()
+
+    def __init__(self):
+        self._tape = OrderedDict({})
+
+    def add_scope(self: Tape, scope: BaseScope, weight: float):
+        self._tape.update(
+            {len(self._tape) + 1: {'item': scope,
+                                   'weight': weight}}
+        )
+
+    @classmethod
+    def push_tape(cls, tape):
+        cls._tapes.append(tape)
+
+    @classmethod
+    def create_tape(cls):
+        return Tape()
+
+    @classmethod
+    def pop_tape(cls):
+        cls._tapes.pop()
+
+    @classmethod
+    def get_active_tape(cls) -> Tape:
+        if len(cls._tapes) == 0:
+            # TODO: could also return just None
+            raise ValueError("No active tapes")
+        return cls._tapes[-1]
+
+
+class ScopeTape:
+
+    def __init__(self):
+        self._tape = None
+        self._is_recording = False
+
+    def __enter__(self):
+        if self._is_recording:
+            raise ValueError("Tried to re-enter an active tape.")
+        if self._tape is None:
+            # create new active tape
+            self._tape = Tape.create_tape()
+
+        # push it to the stack
+        Tape.push_tape(self._tape)
+        self._is_recording = True
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # delete active tape from collection
+        if not self._is_recording:
+            raise ValueError("Tape is not recording")
+        Tape.pop_tape()
+        self._is_recording = False
+
 
 class Scope(keras.layers.Layer, metaclass=abc.ABCMeta):
-
-    _scopes = OrderedDict({})
-
-    @property
-    def scopes(self) -> OrderedDict:
-        return Scope._scopes
 
     def __init__(self,
                  layer: Union[list[str], str]):
@@ -71,27 +126,22 @@ class Scope(keras.layers.Layer, metaclass=abc.ABCMeta):
                                  f"scope call")
         return tensor
 
-    @classmethod
-    def _add_scope(cls: Type[BaseScope], scope: BaseScope, weight: float):
-        BaseScope.scopes.update(
-            {len(cls.scopes) + 1: {'item': scope,
-                                   'weight': weight}}
-        )
-
     def __mul__(self, other: Union[float, int]):
         if isinstance(float, int):
             self._loss_weight = float(other)
             return self
         else:
-            raise ValueError("multiplier must be int or float")
+            raise ValueError("Multiplier must be of type int or float")
 
     def __rmul__(self, other):
         return self.__mul__(other)
 
     def __add__(self,
                 other: BaseScope):
-        BaseScope._add_scope(self, self._loss_weight)
-        BaseScope._add_scope(self, other._loss_weight)
+        # add op to the active tape
+        active_tape = Tape.get_active_tape()
+        active_tape.add_scope(self, self._loss_weight)
+        active_tape.add_scope(other, other._loss_weight)
         return self
 
     def __sub__(self,
